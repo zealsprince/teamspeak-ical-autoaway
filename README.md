@@ -2,7 +2,9 @@
 
 Sets you away on TeamSpeak while your calendar says you're in a meeting.
 
-Paste your calendars' ICS links into a config file. The tool sleeps until the next meeting, sets away with a message, sleeps until the meeting ends and clears it again, and re-fetches the calendars every few hours. Recurring events expand properly, exceptions and moved instances included. All-day events, cancelled events, free-time blocks and meetings you declined are ignored, overlapping meetings merge into one away block, and an away you set yourself is left alone.
+Paste your calendars' ICS links into a config file. The tool sleeps until the next meeting, sets away with a message, sleeps until the meeting ends and clears it again, and re-fetches the calendars every few hours. Recurring events expand properly, exceptions and moved instances included. Cancelled events, free-time blocks, tentative ones and meetings you declined are ignored, overlapping meetings merge into one away block, and an away you set yourself is left alone.
+
+Out of office is its own kind with its own message ("Out until Tue 09:00"). Outlook's show-as "Out of office" marks it, and so does a title starting with OOO for calendars that don't export show-as, Google included. Out of office wins over a meeting in the same span, and a day-long out of office block counts while other all-day events (birthdays, holidays) don't. A calendar entry can carry a default kind, `{ url = "...", kind = "ooo" }`, so a personal calendar where nothing is a meeting reads as out of office throughout.
 
 ## Requirements
 

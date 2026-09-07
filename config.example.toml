@@ -5,13 +5,28 @@
 # Calendar > Shared calendars > Publish a calendar > ICS link. Local .ics
 # paths work too. These links grant read access to the calendar, keep the
 # file private.
+# An entry can also be a table with a kind, "meeting" (the default) or "ooo",
+# for what timed events on that calendar count as when the event itself
+# doesn't say. Handy for a personal calendar, where nothing is a meeting.
 calendars = [
-  "https://calendar.google.com/calendar/ical/.../basic.ics",
+  "https://outlook.office365.com/owa/calendar/.../calendar.ics",
+  { url = "https://calendar.google.com/calendar/ical/.../basic.ics", kind = "ooo" },
 ]
 
-# Away message. {summary} and {end} (local HH:MM) are filled in. TeamSpeak 3
-# only, TeamSpeak 6 shows the away message configured in the client.
+# Away messages. {summary} and {end} are filled in; {end} is a time today
+# ("14:30"), a day and time otherwise ("Tue 09:00"), a day for all-day blocks.
+# TeamSpeak 3 only, TeamSpeak 6 shows the away message configured in the client.
 message = "In a meeting"
+ooo_message = "Out until {end}"
+
+# What counts as out of office: Outlook's show-as "Out of office" (exported as
+# X-MICROSOFT-CDO-BUSYSTATUS:OOF), or a title matching this regex. Out of
+# office wins over a meeting in the same time span, and all-day out of office
+# days count while other all-day events don't.
+ooo_pattern = "^\\s*OOO\\b"
+
+# Whether "tentative" events count as meetings.
+count_tentative = false
 
 # Your attendee address. When set, meetings you declined are skipped.
 email = ""

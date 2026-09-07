@@ -11,6 +11,7 @@ meeting untouched.
 
 import argparse
 import base64
+import re
 import json
 import os
 import signal
@@ -20,7 +21,8 @@ import sys
 import time
 import tomllib
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 
 import icalendar
@@ -64,8 +66,20 @@ class Config:
         with open(path, "rb") as f:
             raw = tomllib.load(f)
         self.path = path
-        self.calendars = raw.get("calendars", [])
+        # Each entry is a link, or a table {url, kind} where kind ("meeting" or
+        # "ooo") is what timed events on that calendar count as by default.
+        self.calendars = []
+        for entry in raw.get("calendars", []):
+            if isinstance(entry, str):
+                entry = {"url": entry}
+            kind = entry.get("kind", "meeting")
+            if kind not in ("meeting", "ooo"):
+                raise ValueError(f"{path}: calendar kind must be 'meeting' or 'ooo', got {kind!r}")
+            self.calendars.append({"url": entry["url"], "kind": kind})
         self.message = raw.get("message", "In a meeting")
+        self.ooo_message = raw.get("ooo_message", "Out until {end}")
+        self.ooo_pattern = re.compile(raw.get("ooo_pattern", r"^\s*OOO\b"), re.I)
+        self.count_tentative = bool(raw.get("count_tentative", False))
         self.email = raw.get("email", "").strip().lower()
         self.refresh = timedelta(hours=float(raw.get("refresh_hours", 6)))
 
@@ -120,47 +134,92 @@ def declined(event, email):
     return False
 
 
-def busy_events(data, start, end, email):
-    """Yields (start, end, summary) for events that should count as a meeting."""
+@dataclass
+class Block:
+    start: datetime
+    end: datetime
+    summary: str
+    kind: str  # "ooo" or "meeting"
+    all_day: bool = False
+
+
+def marked_ooo(event, cfg):
+    """The event itself says out of office: Outlook's show-as, or the title."""
+    busy = str(event.get("X-MICROSOFT-CDO-BUSYSTATUS", "")).upper()
+    return busy == "OOF" or bool(cfg.ooo_pattern.search(str(event.get("SUMMARY", ""))))
+
+
+def classify(event, cfg, default_kind):
+    """Returns "ooo", "meeting" or None for an event."""
+    if str(event.get("STATUS", "")).upper() == "CANCELLED":
+        return None
+    if declined(event, cfg.email):
+        return None
+    # Outlook exports its show-as value; Google has nothing comparable.
+    busy = str(event.get("X-MICROSOFT-CDO-BUSYSTATUS", "")).upper()
+    if busy in ("FREE", "WORKINGELSEWHERE") or str(event.get("TRANSP", "")).upper() == "TRANSPARENT":
+        return None
+    if busy == "TENTATIVE" and not cfg.count_tentative:
+        return None
+    return "ooo" if marked_ooo(event, cfg) else default_kind
+
+
+def local_midnight(day):
+    return datetime.combine(day, dtime.min).astimezone().astimezone(timezone.utc)
+
+
+def busy_events(data, start, end, cfg, default_kind):
+    """Yields a Block for every event that should count."""
     cal = icalendar.Calendar.from_ical(data)
     for event in recurring_ical_events.of(cal).between(start, end):
         dtstart = event.get("DTSTART")
         dtend = event.get("DTEND")
         if dtstart is None or dtend is None:
             continue
-        # All-day events come back as dates, not datetimes.
+        kind = classify(event, cfg, default_kind)
+        if kind is None:
+            continue
+        summary = str(event.get("SUMMARY", "")).strip()
+        # All-day events come back as dates. A day the event itself marks as
+        # out of office counts; any other all-day entry (birthdays, holidays,
+        # reminders) doesn't, whatever the calendar's default kind.
         if not isinstance(dtstart.dt, datetime):
+            if marked_ooo(event, cfg):
+                yield Block(local_midnight(dtstart.dt), local_midnight(dtend.dt), summary, "ooo", all_day=True)
             continue
-        if str(event.get("STATUS", "")).upper() == "CANCELLED":
-            continue
-        if str(event.get("TRANSP", "")).upper() == "TRANSPARENT":
-            continue
-        if declined(event, email):
-            continue
-        yield aware(dtstart.dt), aware(dtend.dt), str(event.get("SUMMARY", "")).strip()
+        yield Block(aware(dtstart.dt), aware(dtend.dt), summary, kind)
 
 
 def build_schedule(cfg, at):
-    """Fetches every calendar and returns merged (start, end, summary) blocks."""
+    """Fetches every calendar and returns Blocks merged per kind, sorted by start."""
     if not cfg.calendars:
         raise ValueError(f"{cfg.path}: 'calendars' is empty, add at least one ICS link")
     window_start = at - timedelta(days=1)
     window_end = at + LOOKAHEAD
     events = []
-    for source in cfg.calendars:
-        events.extend(busy_events(fetch(source), window_start, window_end, cfg.email))
-    events.sort(key=lambda e: e[0])
+    for calendar in cfg.calendars:
+        events.extend(busy_events(fetch(calendar["url"]), window_start, window_end, cfg, calendar["kind"]))
+    events.sort(key=lambda b: b.start)
 
     merged = []
-    for start, end, summary in events:
-        if end <= start:
-            continue
-        if merged and start <= merged[-1][1]:
-            prev_start, prev_end, prev_summary = merged[-1]
-            merged[-1] = (prev_start, max(prev_end, end), prev_summary)
-        else:
-            merged.append((start, end, summary))
+    for kind in ("ooo", "meeting"):
+        for b in (b for b in events if b.kind == kind):
+            if b.end <= b.start:
+                continue
+            last = merged[-1] if merged and merged[-1].kind == kind else None
+            if last and b.start <= last.end:
+                last.end = max(last.end, b.end)
+                last.all_day = last.all_day and b.all_day
+            else:
+                merged.append(Block(b.start, b.end, b.summary, kind, b.all_day))
+    merged.sort(key=lambda b: b.start)
     return merged
+
+
+def current_block(schedule, at):
+    """The block in force at `at`. Out of office wins over a meeting."""
+    covering = [b for b in schedule if b.start <= at < b.end]
+    return next((b for b in covering if b.kind == "ooo"), None) or next(iter(covering), None)
 
 
 # --- backends ----------------------------------------------------------------
@@ -254,6 +313,10 @@ class TeamSpeak3:
             self.query(f"use {handler}", f"clientupdate client_away=1 client_away_message={self.escape(message)}")
             touched.append(handler)
         return touched
+
+    def update_message(self, handlers, message):
+        for handler in handlers:
+            self.query(f"use {handler}", f"clientupdate client_away_message={self.escape(message)}")
 
     def clear_away(self, handlers):
         for handler in handlers:
@@ -437,6 +500,9 @@ class TeamSpeak6:
             return []
         return True
 
+    def update_message(self, handle, message):
+        """The remote apps API can't touch the message, the client's own is shown."""
+
     def clear_away(self, handle):
         if not handle:
             return
@@ -458,9 +524,19 @@ def backends_for(cfg):
 # --- main loop ---------------------------------------------------------------
 
 
-def format_message(cfg, block):
-    start, end, summary = block
-    return cfg.message.format_map({"summary": summary, "end": end.astimezone().strftime("%H:%M")})
+def fmt_end(block, at):
+    """`{end}` as a person would say it: a time today, otherwise a day too."""
+    end = block.end.astimezone()
+    if block.all_day:
+        return end.strftime("%a") if end - at.astimezone() < timedelta(days=7) else end.strftime("%a %d %b")
+    if end.date() == at.astimezone().date():
+        return end.strftime("%H:%M")
+    return end.strftime("%a %H:%M")
+
+
+def format_message(cfg, block, at):
+    template = cfg.ooo_message if block.kind == "ooo" else cfg.message
+    return template.format_map({"summary": block.summary, "end": fmt_end(block, at)})
 
 
 def sleep_until(deadline):
@@ -486,6 +562,7 @@ def run(cfg):
     schedule = []
     next_refresh = now()
     away_on = {}
+    away_kind = None
 
     def stop(*_):
         raise SystemExit(0)
@@ -502,20 +579,29 @@ def run(cfg):
                 try:
                     schedule = build_schedule(cfg, at)
                     next_refresh = at + cfg.refresh
-                    upcoming = [b for b in schedule if b[1] > at]
+                    upcoming = [b for b in schedule if b.end > at]
                     if upcoming:
-                        s, e, summary = upcoming[0]
-                        log(f"calendars refreshed, next: {summary or '(untitled)'} {fmt(s)} to {fmt(e)}")
+                        b = upcoming[0]
+                        log(f"calendars refreshed, next: [{b.kind}] {b.summary or '(untitled)'} {fmt(b.start)} to {fmt(b.end)}")
                     else:
                         log(f"calendars refreshed, nothing in the next {LOOKAHEAD.days} days")
                 except Exception as e:
                     next_refresh = at + RETRY
                     log(f"calendar refresh failed ({e}), retrying in {RETRY}")
 
-            current = next((b for b in schedule if b[0] <= at < b[1]), None)
+            current = current_block(schedule, at)
 
             if current:
-                message = format_message(cfg, current)
+                message = format_message(cfg, current, at)
+                if away_on and away_kind != current.kind:
+                    for backend in backends:
+                        if away_on.get(backend.name):
+                            try:
+                                backend.update_message(away_on[backend.name], message)
+                            except (OSError, BackendError) as e:
+                                log(f"{backend.name}: couldn't update the away message: {e}")
+                    log(f"now [{current.kind}] until {fmt(current.end)}: {message}")
+                away_kind = current.kind
                 for backend in backends:
                     if backend.name in away_on:
                         continue
@@ -526,21 +612,23 @@ def run(cfg):
                         else:
                             away_on[backend.name] = handle
                             if handle:
-                                log(f"{backend.name}: away until {fmt(current[1])}: {message}")
+                                log(f"{backend.name}: away [{current.kind}] until {fmt(current.end)}: {message}")
                     except (OSError, BackendError) as e:
                         log(f"{backend.name}: couldn't set away ({e}), retrying in {TS_RETRY}")
                         ts_retry_at = at + TS_RETRY
             elif away_on:
                 clear_all(backends, away_on)
-                log("meeting over, back")
+                away_kind = None
+                log("back")
 
+            # Any block boundary can change what's in force, including a
+            # block of the other kind starting inside the current one.
             wake = [next_refresh]
             if current:
-                wake.append(current[1])
-            else:
-                upcoming = next((b for b in schedule if b[0] > at), None)
-                if upcoming:
-                    wake.append(upcoming[0])
+                wake.append(current.end)
+            upcoming = next((b for b in schedule if b.start > at), None)
+            if upcoming:
+                wake.append(upcoming.start)
             if ts_retry_at:
                 wake.append(ts_retry_at)
             sleep_until(min(wake))
@@ -553,8 +641,8 @@ def check(cfg):
     blocks = build_schedule(cfg, now())
     if not blocks:
         print(f"nothing in the next {LOOKAHEAD.days} days")
-    for start, end, summary in blocks:
-        print(f"{fmt(start)} to {fmt(end)}  {summary or '(untitled)'}")
+    for b in blocks:
+        print(f"{fmt(b.start)} to {fmt(b.end)}  [{b.kind}] {b.summary or '(untitled)'}")
 
 
 def main():
