@@ -1,0 +1,43 @@
+# Copy to ~/.config/teamspeak-ical-autoaway/config.toml
+
+# ICS links, one per entry. Google: calendar settings > Integrate calendar >
+# "Secret address in iCal format". Outlook / Microsoft 365: Settings >
+# Calendar > Shared calendars > Publish a calendar > ICS link. Local .ics
+# paths work too. These links grant read access to the calendar, keep the
+# file private.
+calendars = [
+  "https://calendar.google.com/calendar/ical/.../basic.ics",
+]
+
+# Away message. {summary} and {end} (local HH:MM) are filled in. TeamSpeak 3
+# only, TeamSpeak 6 shows the away message configured in the client.
+message = "In a meeting"
+
+# Your attendee address. When set, meetings you declined are skipped.
+email = ""
+
+# Hours between calendar re-fetches.
+refresh_hours = 6
+
+# Enable one or both clients. A section that's present counts as enabled
+# unless it says otherwise.
+
+[teamspeak3]
+# ClientQuery plugin address and the file it writes its API key to.
+enabled = true
+host = "127.0.0.1"
+port = 25639
+api_key_file = "~/.ts3client/clientquery.ini"
+
+[teamspeak6]
+# Remote apps WebSocket. Away is set by sending virtual key presses that you
+# bind in the client with `teamspeak-ical-autoaway --press away --delay 10`.
+# With the Away action in Toggle mode, use the same button name for both;
+# the tool checks the client's away flag before pressing either way. The API
+# key the client hands out is stored in api_key_file.
+enabled = false
+host = "127.0.0.1"
+port = 5899
+away_button = "away"
+online_button = "away"
+api_key_file = "~/.config/teamspeak-ical-autoaway/teamspeak6.apikey"

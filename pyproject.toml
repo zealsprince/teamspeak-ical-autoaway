@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "teamspeak-ical-autoaway"
+version = "0.1.0"
+description = "Set yourself away on TeamSpeak while your calendar says you're in a meeting"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+  "icalendar>=6",
+  "recurring-ical-events>=3",
+]
+
+[project.scripts]
+teamspeak-ical-autoaway = "teamspeak_ical_autoaway:main"
+
+[tool.setuptools]
+py-modules = ["teamspeak_ical_autoaway"]
