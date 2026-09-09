@@ -13,11 +13,16 @@ calendars = [
   { url = "https://calendar.google.com/calendar/ical/.../basic.ics", kind = "ooo" },
 ]
 
-# Away messages. {summary} and {end} are filled in; {end} is a time today
-# ("14:30"), a day and time otherwise ("Tue 09:00"), a day for all-day blocks.
+# Away messages. {summary}, {end} and {tz} are filled in; {end} is a time
+# today ("14:30"), a day and time otherwise ("Tue 09:00"), a day for all-day
+# blocks. {tz} is the zone's abbreviation ("MDT"), empty for all-day blocks.
 # TeamSpeak 3 only, TeamSpeak 6 shows the away message configured in the client.
 message = "In a meeting"
-ooo_message = "Out until {end}"
+ooo_message = "Out until {end} {tz}"
+
+# IANA zone that times are shown in, and that calendar times without a zone
+# are read in. Empty uses the machine's own zone.
+timezone = ""
 
 # What counts as out of office: Outlook's show-as "Out of office" (exported as
 # X-MICROSOFT-CDO-BUSYSTATUS:OOF), or a title matching this regex. Out of

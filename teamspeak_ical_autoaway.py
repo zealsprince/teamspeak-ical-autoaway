@@ -24,6 +24,7 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import icalendar
 import recurring_ical_events
@@ -54,8 +55,13 @@ def now():
     return datetime.now(timezone.utc)
 
 
-def fmt(dt):
-    return dt.astimezone().strftime("%a %H:%M")
+def fmt(dt, tz):
+    return dt.astimezone(tz).strftime("%a %H:%M")
+
+
+def localize(naive, tz):
+    """A naive datetime read as wall-clock time in `tz`, the machine's zone when None."""
+    return naive.replace(tzinfo=tz) if tz else naive.astimezone()
 
 
 # --- config ------------------------------------------------------------------
@@ -77,7 +83,14 @@ class Config:
                 raise ValueError(f"{path}: calendar kind must be 'meeting' or 'ooo', got {kind!r}")
             self.calendars.append({"url": entry["url"], "kind": kind})
         self.message = raw.get("message", "In a meeting")
-        self.ooo_message = raw.get("ooo_message", "Out until {end}")
+        self.ooo_message = raw.get("ooo_message", "Out until {end} {tz}")
+        # The zone times are shown in and that floating ICS times are read in.
+        # None leaves both to the machine's own zone.
+        name = raw.get("timezone", "").strip()
+        try:
+            self.tz = ZoneInfo(name) if name else None
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(f"{path}: unknown timezone {name!r}, use an IANA name like 'Europe/Berlin'")
         self.ooo_pattern = re.compile(raw.get("ooo_pattern", r"^\s*OOO\b"), re.I)
         self.count_tentative = bool(raw.get("count_tentative", False))
         self.email = raw.get("email", "").strip().lower()
@@ -114,10 +127,10 @@ def fetch(source):
         return resp.read()
 
 
-def aware(dt):
+def aware(dt, tz):
     """Normalise what the ICS library hands back to a UTC datetime."""
     if dt.tzinfo is None:
-        dt = dt.astimezone()
+        dt = localize(dt, tz)
     return dt.astimezone(timezone.utc)
 
 
@@ -164,8 +177,8 @@ def classify(event, cfg, default_kind):
     return "ooo" if marked_ooo(event, cfg) else default_kind
 
 
-def local_midnight(day):
-    return datetime.combine(day, dtime.min).astimezone().astimezone(timezone.utc)
+def local_midnight(day, tz):
+    return localize(datetime.combine(day, dtime.min), tz).astimezone(timezone.utc)
 
 
 def busy_events(data, start, end, cfg, default_kind):
@@ -185,9 +198,9 @@ def busy_events(data, start, end, cfg, default_kind):
         # reminders) doesn't, whatever the calendar's default kind.
         if not isinstance(dtstart.dt, datetime):
             if marked_ooo(event, cfg):
-                yield Block(local_midnight(dtstart.dt), local_midnight(dtend.dt), summary, "ooo", all_day=True)
+                yield Block(local_midnight(dtstart.dt, cfg.tz), local_midnight(dtend.dt, cfg.tz), summary, "ooo", all_day=True)
             continue
-        yield Block(aware(dtstart.dt), aware(dtend.dt), summary, kind)
+        yield Block(aware(dtstart.dt, cfg.tz), aware(dtend.dt, cfg.tz), summary, kind)
 
 
 def build_schedule(cfg, at):
@@ -524,19 +537,22 @@ def backends_for(cfg):
 # --- main loop ---------------------------------------------------------------
 
 
-def fmt_end(block, at):
+def fmt_end(block, at, tz):
     """`{end}` as a person would say it: a time today, otherwise a day too."""
-    end = block.end.astimezone()
+    end = block.end.astimezone(tz)
     if block.all_day:
-        return end.strftime("%a") if end - at.astimezone() < timedelta(days=7) else end.strftime("%a %d %b")
-    if end.date() == at.astimezone().date():
+        return end.strftime("%a") if end - at < timedelta(days=7) else end.strftime("%a %d %b")
+    if end.date() == at.astimezone(tz).date():
         return end.strftime("%H:%M")
     return end.strftime("%a %H:%M")
 
 
 def format_message(cfg, block, at):
     template = cfg.ooo_message if block.kind == "ooo" else cfg.message
-    return template.format_map({"summary": block.summary, "end": fmt_end(block, at)})
+    # {tz} is the zone's abbreviation at the block's end, so it's right across
+    # a DST switch. An all-day block ends at midnight, where it says nothing.
+    tz = "" if block.all_day else block.end.astimezone(cfg.tz).strftime("%Z")
+    return template.format_map({"summary": block.summary, "end": fmt_end(block, at, cfg.tz), "tz": tz}).strip()
 
 
 def sleep_until(deadline):
@@ -582,7 +598,7 @@ def run(cfg):
                     upcoming = [b for b in schedule if b.end > at]
                     if upcoming:
                         b = upcoming[0]
-                        log(f"calendars refreshed, next: [{b.kind}] {b.summary or '(untitled)'} {fmt(b.start)} to {fmt(b.end)}")
+                        log(f"calendars refreshed, next: [{b.kind}] {b.summary or '(untitled)'} {fmt(b.start, cfg.tz)} to {fmt(b.end, cfg.tz)}")
                     else:
                         log(f"calendars refreshed, nothing in the next {LOOKAHEAD.days} days")
                 except Exception as e:
@@ -600,7 +616,7 @@ def run(cfg):
                                 backend.update_message(away_on[backend.name], message)
                             except (OSError, BackendError) as e:
                                 log(f"{backend.name}: couldn't update the away message: {e}")
-                    log(f"now [{current.kind}] until {fmt(current.end)}: {message}")
+                    log(f"now [{current.kind}] until {fmt(current.end, cfg.tz)}: {message}")
                 away_kind = current.kind
                 for backend in backends:
                     if backend.name in away_on:
@@ -612,7 +628,7 @@ def run(cfg):
                         else:
                             away_on[backend.name] = handle
                             if handle:
-                                log(f"{backend.name}: away [{current.kind}] until {fmt(current.end)}: {message}")
+                                log(f"{backend.name}: away [{current.kind}] until {fmt(current.end, cfg.tz)}: {message}")
                     except (OSError, BackendError) as e:
                         log(f"{backend.name}: couldn't set away ({e}), retrying in {TS_RETRY}")
                         ts_retry_at = at + TS_RETRY
@@ -642,7 +658,7 @@ def check(cfg):
     if not blocks:
         print(f"nothing in the next {LOOKAHEAD.days} days")
     for b in blocks:
-        print(f"{fmt(b.start)} to {fmt(b.end)}  [{b.kind}] {b.summary or '(untitled)'}")
+        print(f"{fmt(b.start, cfg.tz)} to {fmt(b.end, cfg.tz)}  [{b.kind}] {b.summary or '(untitled)'}")
 
 
 def main():

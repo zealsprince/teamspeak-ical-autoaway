@@ -4,7 +4,9 @@ Sets you away on TeamSpeak while your calendar says you're in a meeting.
 
 Paste your calendars' ICS links into a config file. The tool sleeps until the next meeting, sets away with a message, sleeps until the meeting ends and clears it again, and re-fetches the calendars every few hours. Recurring events expand properly, exceptions and moved instances included. Cancelled events, free-time blocks, tentative ones and meetings you declined are ignored, overlapping meetings merge into one away block, and an away you set yourself is left alone.
 
-Out of office is its own kind with its own message ("Out until Tue 09:00"). Outlook's show-as "Out of office" marks it, and so does a title starting with OOO for calendars that don't export show-as, Google included. Out of office wins over a meeting in the same span, and a day-long out of office block counts while other all-day events (birthdays, holidays) don't. A calendar entry can carry a default kind, `{ url = "...", kind = "ooo" }`, so a personal calendar where nothing is a meeting reads as out of office throughout.
+Out of office is its own kind with its own message ("Out until Tue 09:00 MDT"). Outlook's show-as "Out of office" marks it, and so does a title starting with OOO for calendars that don't export show-as, Google included. Out of office wins over a meeting in the same span, and a day-long out of office block counts while other all-day events (birthdays, holidays) don't. A calendar entry can carry a default kind, `{ url = "...", kind = "ooo" }`, so a personal calendar where nothing is a meeting reads as out of office throughout.
+
+Times in messages and logs are in the machine's zone unless `timezone` names another one.
 
 ## Requirements
 
@@ -32,7 +34,7 @@ teamspeak-ical-autoaway
 ## TeamSpeak 6
 
 > [!WARNING]
-> TeamSpeak 6 support is a workaround, and a poor one. The remote apps API can't set away, let alone a message. All it can do is send a virtual button press that you bind to the client's Away toggle. So the tool can only flip away on and off, and the message is whatever you typed under "Set Away Message" in the client. `{summary}` and `{end}` don't apply. If the message matters to you, use TeamSpeak 3.
+> TeamSpeak 6 support is a workaround, and a poor one. The remote apps API can't set away, let alone a message. All it can do is send a virtual button press that you bind to the client's Away toggle. So the tool can only flip away on and off, and the message is whatever you typed under "Set Away Message" in the client. `{summary}`, `{end}` and `{tz}` don't apply. If the message matters to you, use TeamSpeak 3.
 
 1. `teamspeak-ical-autoaway --press away`. The client lists the app under Settings > Remote Apps > Permission Requests. Click Allow. The API key it returns is stored next to the config.
 2. `teamspeak-ical-autoaway --press away --delay 10`, then switch to the client and click "+" on the Away row under Settings > Key Bindings before the press arrives. Recording stops if the client loses focus. The row then shows `com.zealsprince.teamspeak-ical-autoaway:away`.
